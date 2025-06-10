@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
-import { Upload, Download, RotateCcw, Palette, Pipette } from "lucide-react"
+import { Upload, Download, RotateCcw, Palette } from "lucide-react"
 import { Input } from "@/components/ui/input"
 
 interface ColorReplacement {
@@ -16,12 +16,7 @@ interface ColorReplacement {
   tolerance: number
 }
 
-interface ColorPreviewPosition {
-  x: number
-  y: number
-  visible: boolean
-  color: string
-}
+
 
 export default function ImageColorChanger() {
   const [originalImage, setOriginalImage] = useState<HTMLImageElement | null>(null)
@@ -30,13 +25,7 @@ export default function ImageColorChanger() {
     { from: "#ff0000", to: "#00ff00", tolerance: 30 },
   ])
   const [isProcessing, setIsProcessing] = useState(false)
-  const [pickingColor, setPickingColor] = useState<{ index: number; type: "from" | "to" } | null>(null)
-  const [colorPreview, setColorPreview] = useState<ColorPreviewPosition>({
-    x: 0,
-    y: 0,
-    visible: false,
-    color: "#ffffff",
-  })
+
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const originalCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -59,53 +48,94 @@ export default function ImageColorChanger() {
   }
 
   const colorDistance = (color1: { r: number; g: number; b: number }, color2: { r: number; g: number; b: number }) => {
-    return Math.sqrt(
-      Math.pow(color1.r - color2.r, 2) + Math.pow(color1.g - color2.g, 2) + Math.pow(color1.b - color2.b, 2),
-    )
+    // Use squared distance to avoid expensive sqrt operation
+    const dr = color1.r - color2.r
+    const dg = color1.g - color2.g
+    const db = color1.b - color2.b
+    return Math.sqrt(dr * dr + dg * dg + db * db)
   }
 
-  const processImage = useCallback(() => {
+  const processImage = useCallback(async () => {
     if (!originalImage) return
 
     setIsProcessing(true)
 
-    const canvas = document.createElement("canvas")
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return
+    // Use setTimeout to make processing asynchronous
+    setTimeout(async () => {
+      const canvas = document.createElement("canvas")
+      const ctx = canvas.getContext("2d")
+      if (!ctx) {
+        setIsProcessing(false)
+        return
+      }
 
-    canvas.width = originalImage.width
-    canvas.height = originalImage.height
-    ctx.drawImage(originalImage, 0, 0)
+      canvas.width = originalImage.width
+      canvas.height = originalImage.height
+      ctx.drawImage(originalImage, 0, 0)
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    const data = imageData.data
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      const data = imageData.data
 
-    for (let i = 0; i < data.length; i += 4) {
-      const currentColor = { r: data[i], g: data[i + 1], b: data[i + 2] }
-
-      for (const replacement of colorReplacements) {
+      // Pre-calculate color values for better performance
+      const replacements = colorReplacements.map(replacement => {
         const fromColor = hexToRgb(replacement.from)
         const toColor = hexToRgb(replacement.to)
+        return {
+          from: fromColor,
+          to: toColor,
+          tolerance: replacement.tolerance,
+          valid: fromColor && toColor
+        }
+      }).filter(r => r.valid)
 
-        if (fromColor && toColor) {
-          const distance = colorDistance(currentColor, fromColor)
-          if (distance <= replacement.tolerance) {
-            data[i] = toColor.r
-            data[i + 1] = toColor.g
-            data[i + 2] = toColor.b
-            break
+      // Process in chunks to avoid blocking the main thread
+      const chunkSize = 40000 // Process 10,000 pixels at a time
+      let pixelIndex = 0
+
+      const processChunk = () => {
+        const endIndex = Math.min(pixelIndex + chunkSize, data.length)
+        
+        for (let i = pixelIndex; i < endIndex; i += 4) {
+          const currentColor = { r: data[i], g: data[i + 1], b: data[i + 2] }
+
+          for (const replacement of replacements) {
+            if (replacement.from && replacement.to) {
+              const distance = colorDistance(currentColor, replacement.from)
+              if (distance <= replacement.tolerance) {
+                data[i] = replacement.to.r
+                data[i + 1] = replacement.to.g
+                data[i + 2] = replacement.to.b
+                break
+              }
+            }
           }
         }
-      }
-    }
 
-    setProcessedImageData(imageData)
-    setIsProcessing(false)
+        pixelIndex = endIndex
+
+        if (pixelIndex < data.length) {
+          // Continue processing in next frame
+          requestAnimationFrame(processChunk)
+        } else {
+          // Processing complete
+          setProcessedImageData(imageData)
+          setIsProcessing(false)
+        }
+      }
+
+      // Start processing
+      processChunk()
+    }, 10)
   }, [originalImage, colorReplacements])
 
   useEffect(() => {
     if (originalImage) {
-      processImage()
+      // Debounce processing to avoid excessive re-processing
+      const timeoutId = setTimeout(() => {
+        processImage()
+      }, 300) // Wait 300ms after last change
+
+      return () => clearTimeout(timeoutId)
     }
   }, [originalImage, colorReplacements, processImage])
 
@@ -142,108 +172,7 @@ export default function ImageColorChanger() {
     }
   }, [originalImage])
 
-  // Setup global color picker
-  useEffect(() => {
-    if (!pickingColor) {
-      setColorPreview((prev) => ({ ...prev, visible: false }))
-      return
-    }
 
-    const handleMouseMove = (e: MouseEvent) => {
-      // Get the color at the cursor position
-      const x = e.clientX
-      const y = e.clientY
-
-      // Get the element under the cursor
-      const element = document.elementFromPoint(x, y)
-
-      if (element) {
-        // Get computed style
-        const computedStyle = window.getComputedStyle(element)
-        const bgColor = computedStyle.backgroundColor
-
-        // Parse the RGB color
-        const rgbMatch = bgColor.match(/rgb$$(\d+),\s*(\d+),\s*(\d+)$$/)
-        let hexColor = "#ffffff"
-
-        if (rgbMatch) {
-          const r = Number.parseInt(rgbMatch[1])
-          const g = Number.parseInt(rgbMatch[2])
-          const b = Number.parseInt(rgbMatch[3])
-          hexColor = rgbToHex(r, g, b)
-        } else if (element instanceof HTMLCanvasElement) {
-          // If it's a canvas element, try to get pixel data
-          try {
-            const rect = element.getBoundingClientRect()
-            const scaleX = element.width / rect.width
-            const scaleY = element.height / rect.height
-            const canvasX = Math.floor((x - rect.left) * scaleX)
-            const canvasY = Math.floor((y - rect.top) * scaleY)
-            const ctx = element.getContext("2d")
-
-            if (ctx && canvasX >= 0 && canvasY >= 0 && canvasX < element.width && canvasY < element.height) {
-              const pixelData = ctx.getImageData(canvasX, canvasY, 1, 1).data
-              hexColor = rgbToHex(pixelData[0], pixelData[1], pixelData[2])
-            }
-          } catch (error) {
-            // Fallback if we can't access canvas data
-            console.warn("Could not access canvas pixel data:", error)
-          }
-        }
-
-        // Update color preview
-        setColorPreview({
-          x: x + 15,
-          y: y + 15,
-          visible: true,
-          color: hexColor,
-        })
-      }
-    }
-
-    const handleClick = (e: MouseEvent) => {
-      if (!pickingColor) return
-
-      // Get the current color from the preview
-      const hexColor = colorPreview.color
-
-      // Update the color replacement
-      setColorReplacements((prev) => {
-        const newReplacements = [...prev]
-        newReplacements[pickingColor.index][pickingColor.type] = hexColor
-        return newReplacements
-      })
-
-      // Exit picking mode
-      setPickingColor(null)
-
-      // Prevent default to avoid unwanted actions
-      e.preventDefault()
-      e.stopPropagation()
-    }
-
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setPickingColor(null)
-      }
-    }
-
-    // Add event listeners
-    document.addEventListener("mousemove", handleMouseMove)
-    document.addEventListener("click", handleClick, true)
-    document.addEventListener("keydown", handleEscape)
-
-    // Set cursor
-    document.body.style.cursor = "crosshair"
-
-    return () => {
-      // Clean up
-      document.removeEventListener("mousemove", handleMouseMove)
-      document.removeEventListener("click", handleClick, true)
-      document.removeEventListener("keydown", handleEscape)
-      document.body.style.cursor = "default"
-    }
-  }, [pickingColor])
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -355,70 +284,44 @@ export default function ImageColorChanger() {
                           {/* From Color Section */}
                           <div className="space-y-2">
                             <Label className="text-sm font-medium text-gray-700">From Color</Label>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-3">
                               <div className="relative">
                                 <Input
                                   type="color"
                                   value={replacement.from}
                                   onChange={(e) => updateColorReplacement(index, "from", e.target.value)}
-                                  className="w-10 h-9 p-1 border rounded cursor-pointer"
+                                  className="w-12 h-10 p-1 border rounded cursor-pointer"
                                 />
                               </div>
                               <Input
                                 type="text"
                                 value={replacement.from}
                                 onChange={(e) => updateColorReplacement(index, "from", e.target.value)}
-                                className="flex-1 h-9 text-xs font-mono"
+                                className="flex-1 h-10 text-xs font-mono"
                                 placeholder="#ffffff"
                               />
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setPickingColor({ index, type: "from" })}
-                                className={`h-9 px-2 text-xs ${
-                                  pickingColor?.index === index && pickingColor?.type === "from"
-                                    ? "bg-blue-100 border-blue-300 text-blue-700"
-                                    : ""
-                                }`}
-                              >
-                                <Pipette className="h-3 w-3 mr-1" />
-                                Pick
-                              </Button>
                             </div>
                           </div>
 
                           {/* To Color Section */}
                           <div className="space-y-2">
                             <Label className="text-sm font-medium text-gray-700">To Color</Label>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-3">
                               <div className="relative">
                                 <Input
                                   type="color"
                                   value={replacement.to}
                                   onChange={(e) => updateColorReplacement(index, "to", e.target.value)}
-                                  className="w-10 h-9 p-1 border rounded cursor-pointer"
+                                  className="w-12 h-10 p-1 border rounded cursor-pointer"
                                 />
                               </div>
                               <Input
                                 type="text"
                                 value={replacement.to}
                                 onChange={(e) => updateColorReplacement(index, "to", e.target.value)}
-                                className="flex-1 h-9 text-xs font-mono"
+                                className="flex-1 h-10 text-xs font-mono"
                                 placeholder="#ffffff"
                               />
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setPickingColor({ index, type: "to" })}
-                                className={`h-9 px-2 text-xs ${
-                                  pickingColor?.index === index && pickingColor?.type === "to"
-                                    ? "bg-blue-100 border-blue-300 text-blue-700"
-                                    : ""
-                                }`}
-                              >
-                                <Pipette className="h-3 w-3 mr-1" />
-                                Pick
-                              </Button>
                             </div>
                           </div>
                         </div>
@@ -472,22 +375,7 @@ export default function ImageColorChanger() {
 
             {/* Image Preview */}
             <div className="xl:col-span-2 lg:col-span-2 space-y-6">
-              {pickingColor && (
-                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-4 text-center shadow-sm">
-                  <div className="flex items-center justify-center gap-2 mb-2">
-                    <Pipette className="h-5 w-5 text-blue-600" />
-                    <span className="font-semibold text-blue-800">Color Picker Active</span>
-                  </div>
-                  <p className="text-blue-700 text-sm">
-                    Click anywhere on the page to pick a{" "}
-                    <span className="font-semibold">
-                      {pickingColor.type === "from" ? "source" : "target"}
-                    </span>{" "}
-                    color
-                  </p>
-                  <p className="text-blue-600 text-xs mt-1">Press ESC to cancel</p>
-                </div>
-              )}
+
 
                              <div className="space-y-4">
                  {/* Original Image */}
@@ -556,22 +444,7 @@ export default function ImageColorChanger() {
           </div>
         )}
 
-        {/* Color Preview Tooltip */}
-        {colorPreview.visible && (
-          <div
-            className="fixed z-50 bg-white rounded-md shadow-lg border p-2 pointer-events-none"
-            style={{
-              left: `${colorPreview.x}px`,
-              top: `${colorPreview.y}px`,
-              transform: "translate(0, 0)",
-            }}
-          >
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 border rounded" style={{ backgroundColor: colorPreview.color }}></div>
-              <span className="text-xs font-mono">{colorPreview.color}</span>
-            </div>
-          </div>
-        )}
+
       </div>
     </div>
   )
