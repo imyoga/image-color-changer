@@ -9,11 +9,13 @@ import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Upload, Download, RotateCcw, Palette } from "lucide-react"
 import { Input } from "@/components/ui/input"
+import { Checkbox } from "@/components/ui/checkbox"
 
 interface ColorReplacement {
   from: string
   to: string
   tolerance: number
+  makeTransparent: boolean
 }
 
 
@@ -22,7 +24,7 @@ export default function ImageColorChanger() {
   const [originalImage, setOriginalImage] = useState<HTMLImageElement | null>(null)
   const [processedImageData, setProcessedImageData] = useState<ImageData | null>(null)
   const [colorReplacements, setColorReplacements] = useState<ColorReplacement[]>([
-    { from: "#ff0000", to: "#00ff00", tolerance: 30 },
+    { from: "#ff0000", to: "#00ff00", tolerance: 30, makeTransparent: false },
   ])
   const [isProcessing, setIsProcessing] = useState(false)
 
@@ -79,12 +81,13 @@ export default function ImageColorChanger() {
       // Pre-calculate color values for better performance
       const replacements = colorReplacements.map(replacement => {
         const fromColor = hexToRgb(replacement.from)
-        const toColor = hexToRgb(replacement.to)
+        const toColor = replacement.makeTransparent ? null : hexToRgb(replacement.to)
         return {
           from: fromColor,
           to: toColor,
           tolerance: replacement.tolerance,
-          valid: fromColor && toColor
+          makeTransparent: replacement.makeTransparent,
+          valid: fromColor && (replacement.makeTransparent || toColor)
         }
       }).filter(r => r.valid)
 
@@ -99,12 +102,18 @@ export default function ImageColorChanger() {
           const currentColor = { r: data[i], g: data[i + 1], b: data[i + 2] }
 
           for (const replacement of replacements) {
-            if (replacement.from && replacement.to) {
+            if (replacement.from) {
               const distance = colorDistance(currentColor, replacement.from)
               if (distance <= replacement.tolerance) {
-                data[i] = replacement.to.r
-                data[i + 1] = replacement.to.g
-                data[i + 2] = replacement.to.b
+                if (replacement.makeTransparent) {
+                  // Make pixel transparent
+                  data[i + 3] = 0
+                } else if (replacement.to) {
+                  // Replace with target color
+                  data[i] = replacement.to.r
+                  data[i + 1] = replacement.to.g
+                  data[i + 2] = replacement.to.b
+                }
                 break
               }
             }
@@ -191,14 +200,14 @@ export default function ImageColorChanger() {
   }
 
   const addColorReplacement = () => {
-    setColorReplacements([...colorReplacements, { from: "#ff0000", to: "#00ff00", tolerance: 30 }])
+    setColorReplacements([...colorReplacements, { from: "#ff0000", to: "#00ff00", tolerance: 30, makeTransparent: false }])
   }
 
   const removeColorReplacement = (index: number) => {
     setColorReplacements(colorReplacements.filter((_, i) => i !== index))
   }
 
-  const updateColorReplacement = (index: number, field: keyof ColorReplacement, value: string | number) => {
+  const updateColorReplacement = (index: number, field: keyof ColorReplacement, value: string | number | boolean) => {
     const newReplacements = [...colorReplacements]
     newReplacements[index] = { ...newReplacements[index], [field]: value }
     setColorReplacements(newReplacements)
@@ -216,7 +225,7 @@ export default function ImageColorChanger() {
   const resetImage = () => {
     setOriginalImage(null)
     setProcessedImageData(null)
-    setColorReplacements([{ from: "#ff0000", to: "#00ff00", tolerance: 30 }])
+    setColorReplacements([{ from: "#ff0000", to: "#00ff00", tolerance: 30, makeTransparent: false }])
     if (fileInputRef.current) {
       fileInputRef.current.value = ""
     }
@@ -305,24 +314,46 @@ export default function ImageColorChanger() {
 
                           {/* To Color Section */}
                           <div className="space-y-2">
-                            <Label className="text-sm font-medium text-gray-700">To Color</Label>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center justify-between">
+                              <Label className="text-sm font-medium text-gray-700">To Color</Label>
+                              <div className="flex items-center gap-2">
+                                <Checkbox
+                                  id={`transparent-${index}`}
+                                  checked={replacement.makeTransparent}
+                                  onCheckedChange={(checked) => updateColorReplacement(index, "makeTransparent", checked === true)}
+                                />
+                                <Label 
+                                  htmlFor={`transparent-${index}`} 
+                                  className="text-xs font-medium text-gray-600 cursor-pointer"
+                                >
+                                  Make Transparent
+                                </Label>
+                              </div>
+                            </div>
+                            <div className={`flex items-center gap-3 ${replacement.makeTransparent ? 'opacity-40 pointer-events-none' : ''}`}>
                               <div className="relative">
                                 <Input
                                   type="color"
                                   value={replacement.to}
                                   onChange={(e) => updateColorReplacement(index, "to", e.target.value)}
                                   className="w-12 h-10 p-1 border rounded cursor-pointer"
+                                  disabled={replacement.makeTransparent}
                                 />
                               </div>
                               <Input
                                 type="text"
-                                value={replacement.to}
+                                value={replacement.makeTransparent ? "Transparent" : replacement.to}
                                 onChange={(e) => updateColorReplacement(index, "to", e.target.value)}
                                 className="flex-1 h-10 text-xs font-mono"
                                 placeholder="#ffffff"
+                                disabled={replacement.makeTransparent}
                               />
                             </div>
+                            {replacement.makeTransparent && (
+                              <p className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded mt-1">
+                                ℹ️ Image will be saved as PNG to preserve transparency
+                              </p>
+                            )}
                           </div>
                         </div>
 
